@@ -72,13 +72,7 @@ async function customFetch(url, options = {}) {
     await randomizeRequestTiming();
 
     console.log('Making request to:', url);
-console.log('Request options:', {
-  ...requestOptions,
-  headers: Object.keys(requestOptions.headers).reduce((acc, key) => {
-    acc[key] = key.toLowerCase().includes('authorization') ? '[REDACTED]' : requestOptions.headers[key];
-    return acc;
-  }, {})
-});
+
     
     return new Promise((resolve, reject) => {
       const urlObj = new URL(url);
@@ -96,6 +90,15 @@ console.log('Request options:', {
         // Force HTTP/1.1 to avoid potential HTTP/2 parsing issues
         ALPNProtocols: ['http/1.1'] 
       };
+
+
+      console.log('Request options:', {
+        ...requestOptions,
+        headers: Object.keys(requestOptions.headers).reduce((acc, key) => {
+          acc[key] = key.toLowerCase().includes('authorization') ? '[REDACTED]' : requestOptions.headers[key];
+          return acc;
+        }, {})
+      });
   
       // Apply TLS fingerprinting more carefully
       if (isHttps) {
