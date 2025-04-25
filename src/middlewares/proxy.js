@@ -5,8 +5,6 @@ const http = require('http');
 const https = require('https');
 const zlib = require('zlib');
 const Stream = require('stream');
-const url = require('url');
-const querystring = require('querystring');
 const { URL } = require('url');
 const crypto = require('crypto');
 
@@ -104,31 +102,46 @@ function getCookieString(domain) {
   return cookieStr;
 }
 
-// Get normalized hostname for cache
-function getNormalizedHostname(urlString) {
-  const parsed = new URL(urlString);
-  return parsed.hostname;
+// Safe decompression function that prevents zlib errors
+function createSafeDecompressionStream(contentEncoding) {
+  if (!contentEncoding) return null;
+  
+  let decompressionStream;
+  
+  try {
+    if (contentEncoding.includes('gzip')) {
+      decompressionStream = zlib.createGunzip({
+        flush: zlib.Z_SYNC_FLUSH,
+        finishFlush: zlib.Z_SYNC_FLUSH
+      });
+    } else if (contentEncoding.includes('deflate')) {
+      decompressionStream = zlib.createInflate({
+        flush: zlib.Z_SYNC_FLUSH,
+        finishFlush: zlib.Z_SYNC_FLUSH
+      });
+    } else if (contentEncoding.includes('br')) {
+      decompressionStream = zlib.createBrotliDecompress({
+        flush: zlib.BROTLI_OPERATION_FLUSH
+      });
+    }
+
+    // Add error handler to prevent crashes
+    if (decompressionStream) {
+      decompressionStream.on('error', (err) => {
+        console.error('Decompression error:', err.message);
+        // Instead of crashing, just end the stream
+        decompressionStream.end();
+      });
+    }
+    
+    return decompressionStream;
+  } catch (err) {
+    console.error('Error creating decompression stream:', err);
+    return null;
+  }
 }
 
-// Use sockets that won't hang
-function setupAgents() {
-  const httpAgent = new http.Agent({
-    keepAlive: true,
-    maxSockets: 50,
-    timeout: 60000
-  });
-  
-  const httpsAgent = new https.Agent({
-    keepAlive: true,
-    maxSockets: 50,
-    timeout: 60000,
-    rejectUnauthorized: false
-  });
-  
-  return { httpAgent, httpsAgent };
-}
-
-// Improved fetch implementation with better redirect handling
+// Improved fetch implementation with better error handling
 async function customFetch(url, options = {}, redirectCount = 0, redirectHistory = []) {
   await randomizeRequestTiming();
 
@@ -165,7 +178,6 @@ async function customFetch(url, options = {}, redirectCount = 0, redirectHistory
   return new Promise((resolve, reject) => {
     try {
       const isHttps = urlObj.protocol === 'https:';
-      const { httpAgent, httpsAgent } = setupAgents();
       
       // Get cookies for this domain
       const cookieStr = getCookieString(hostname);
@@ -177,8 +189,7 @@ async function customFetch(url, options = {}, redirectCount = 0, redirectHistory
         port: urlObj.port || (isHttps ? 443 : 80),
         path: urlObj.pathname + urlObj.search,
         timeout: 120000, // 2 minute timeout for heavy sites
-        rejectUnauthorized: false,
-        agent: isHttps ? httpsAgent : httpAgent,
+        rejectUnauthorized: false
       };
       
       // Add cookies if we have them
@@ -245,51 +256,99 @@ async function customFetch(url, options = {}, redirectCount = 0, redirectHistory
           return;
         }
         
-        // Special case for certain sites that might use JavaScript redirects
-        if (statusCode === 200 && 
-            (headers['content-type'] && headers['content-type'].includes('text/html'))) {
-          // We'll handle potential JS redirects by analyzing the content
-          // But we need to set up our stream pipeline first
-        }
-        
-        // Setup decompression streams based on content-encoding
-        let decompressionStream = null;
-        const contentEncoding = headers['content-encoding'];
-        if (contentEncoding) {
-          console.log(`Content encoding: ${contentEncoding}`);
-          if (contentEncoding.includes('gzip')) {
-            decompressionStream = zlib.createGunzip();
-          } else if (contentEncoding.includes('deflate')) {
-            decompressionStream = zlib.createInflate();
-          } else if (contentEncoding.includes('br')) {
-            decompressionStream = zlib.createBrotliDecompress();    
-          }
-        }
-        
+        // Create a response object with both buffer and streaming capabilities
         const responseObj = {
           status: statusCode,
           headers: response.headers,
-          stream: decompressionStream ? response.pipe(decompressionStream) : response,
+          originalResponse: response, // Store original response
+          
+          // Method to get content as a buffer
           getBuffer: () => {
             return new Promise((resolveBuffer, rejectBuffer) => {
-              let rawData = Buffer.alloc(0);
-              const dataStream = decompressionStream ? response.pipe(decompressionStream) : response;
+              const chunks = [];
               
-              dataStream.on('data', (chunk) => {
-                rawData = Buffer.concat([rawData, chunk]);
+              response.on('data', (chunk) => {
+                chunks.push(chunk);
               });
               
-              dataStream.on('end', () => {
-                console.log(`Response complete: ${statusCode}, size: ${rawData.length} bytes`);
-                resolveBuffer(rawData);
+              response.on('end', () => {
+                const buffer = Buffer.concat(chunks);
+                console.log(`Response complete: ${statusCode}, size: ${buffer.length} bytes`);
+                
+                // Decompress if needed
+                try {
+                  const contentEncoding = headers['content-encoding'];
+                  if (!contentEncoding) {
+                    return resolveBuffer(buffer);
+                  }
+                  
+                  // Handle different compression types
+                  if (contentEncoding.includes('gzip')) {
+                    zlib.gunzip(buffer, (err, result) => {
+                      if (err) {
+                        console.error('Gunzip error:', err);
+                        // Return the original buffer on error
+                        resolveBuffer(buffer);
+                      } else {
+                        resolveBuffer(result);
+                      }
+                    });
+                  } else if (contentEncoding.includes('deflate')) {
+                    zlib.inflate(buffer, (err, result) => {
+                      if (err) {
+                        console.error('Inflate error:', err);
+                        // Return the original buffer on error
+                        resolveBuffer(buffer);
+                      } else {
+                        resolveBuffer(result);
+                      }
+                    });
+                  } else if (contentEncoding.includes('br')) {
+                    zlib.brotliDecompress(buffer, (err, result) => {
+                      if (err) {
+                        console.error('Brotli decompression error:', err);
+                        // Return the original buffer on error
+                        resolveBuffer(buffer);
+                      } else {
+                        resolveBuffer(result);
+                      }
+                    });
+                  } else {
+                    // Unknown encoding, return as-is
+                    resolveBuffer(buffer);
+                  }
+                } catch (err) {
+                  console.error('Decompression error:', err);
+                  resolveBuffer(buffer); // Return original buffer on error
+                }
               });
               
-              dataStream.on('error', (err) => {
-                console.error('Stream error:', err);
+              response.on('error', (err) => {
+                console.error('Response stream error:', err);
                 rejectBuffer(err);
               });
             });
           },
+          
+          // Method to get raw stream (without decompression)
+          getRawStream: () => {
+            return response;
+          },
+          
+          // Method to get decompressed stream
+          getStream: () => {
+            const contentEncoding = headers['content-encoding'];
+            const decompressionStream = createSafeDecompressionStream(contentEncoding);
+            
+            if (decompressionStream) {
+              // We need to create a fresh response clone to pipe through the decompression stream
+              // since response streams can only be consumed once
+              return response.pipe(decompressionStream);
+            } else {
+              return response;
+            }
+          },
+          
           url: url // Include the final URL
         };
         
@@ -388,7 +447,7 @@ async function fetchWithRandomProfile(url, parentUrl = null) {
         headers: {
           'User-Agent': profile.userAgent,
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Encoding': 'gzip, deflate, br',
+          'Accept-Encoding': 'gzip, deflate',  // Removed 'br' to avoid brotli issues
           'Host': urlObj.hostname,
           'Connection': 'keep-alive'
         }
@@ -400,37 +459,88 @@ async function fetchWithRandomProfile(url, parentUrl = null) {
   }
 }
 
-// Handle resource mapping for subresources
-function mapResourceUrl(originalUrl, baseUrl) {
+// Helper function to rewrite URLs in HTML content
+function rewriteHtml(html, targetUrl, proxyPath, protocol, host) {
   try {
-    // Already absolute URL
-    if (/^https?:\/\//i.test(originalUrl)) {
-      return originalUrl;
-    }
+    const baseUrl = new URL(targetUrl);
     
-    // Protocol relative URL
-    if (originalUrl.startsWith('//')) {
-      const baseUrlObj = new URL(baseUrl);
-      return `${baseUrlObj.protocol}${originalUrl}`;
-    }
+    // Replace src, href, and other attributes
+    const urlRegex = /(src|href|action|data-src)=["'](?!data:|blob:|javascript:|#|mailto:)([^"']+)["']/gi;
+    html = html.replace(urlRegex, (match, attr, url) => {
+      try {
+        let absoluteUrl;
+        
+        if (url.startsWith('//')) {
+          // Protocol-relative URL
+          absoluteUrl = `${baseUrl.protocol}${url}`;
+        } else if (url.startsWith('/')) {
+          // Absolute path
+          absoluteUrl = `${baseUrl.protocol}//${baseUrl.host}${url}`;
+        } else if (!url.match(/^https?:\/\//i)) {
+          // Relative path
+          let basePath = baseUrl.pathname;
+          // Ensure basePath ends with a slash if it's not pointing to a file
+          if (!basePath.endsWith('/') && !basePath.includes('.')) {
+            basePath += '/';
+          } else {
+            basePath = basePath.substring(0, basePath.lastIndexOf('/') + 1);
+          }
+          absoluteUrl = `${baseUrl.protocol}//${baseUrl.host}${basePath}${url}`;
+        } else {
+          // Already absolute
+          absoluteUrl = url;
+        }
+        
+        const encodedUrl = encodeURIComponent(absoluteUrl);
+        return `${attr}="${protocol}://${host}${proxyPath}?targetUrl=${encodedUrl}"`;
+      } catch (e) {
+        console.error('URL rewrite error:', e);
+        return match; // Return original on error
+      }
+    });
     
-    // Absolute path
-    if (originalUrl.startsWith('/')) {
-      const baseUrlObj = new URL(baseUrl);
-      return `${baseUrlObj.protocol}//${baseUrlObj.host}${originalUrl}`;
-    }
+    // Replace URLs in inline styles
+    const styleRegex = /url\(['"]?(?!data:|blob:)([^'")\s]+)['"]?\)/gi;
+    html = html.replace(styleRegex, (match, url) => {
+      try {
+        let absoluteUrl;
+        
+        if (url.startsWith('//')) {
+          absoluteUrl = `${baseUrl.protocol}${url}`;
+        } else if (url.startsWith('/')) {
+          absoluteUrl = `${baseUrl.protocol}//${baseUrl.host}${url}`;
+        } else if (!url.match(/^https?:\/\//i)) {
+          let basePath = baseUrl.pathname;
+          if (!basePath.endsWith('/') && !basePath.includes('.')) {
+            basePath += '/';
+          } else {
+            basePath = basePath.substring(0, basePath.lastIndexOf('/') + 1);
+          }
+          absoluteUrl = `${baseUrl.protocol}//${baseUrl.host}${basePath}${url}`;
+        } else {
+          absoluteUrl = url;
+        }
+        
+        const encodedUrl = encodeURIComponent(absoluteUrl);
+        return `url("${protocol}://${host}${proxyPath}?targetUrl=${encodedUrl}")`;
+      } catch (e) {
+        console.error('Style URL rewrite error:', e);
+        return match; // Return original on error
+      }
+    });
     
-    // Relative path
-    const baseUrlObj = new URL(baseUrl);
-    const basePath = baseUrlObj.pathname.substring(0, baseUrlObj.pathname.lastIndexOf('/') + 1);
-    return `${baseUrlObj.protocol}//${baseUrlObj.host}${basePath}${originalUrl}`;
+    // Add our own base tag to ensure relative URLs work correctly
+    const baseTag = `<base href="${baseUrl.protocol}//${baseUrl.host}${baseUrl.pathname}" />`;
+    html = html.replace(/<head>/i, `<head>${baseTag}`);
+    
+    return html;
   } catch (err) {
-    console.error('Error mapping resource URL:', err);
-    return originalUrl; // Return as-is if there's an error
+    console.error('HTML rewrite error:', err);
+    return html; // Return original on error
   }
 }
 
-// Stream mode with content replacement for proxied URLs
+// Main proxy handler
 module.exports = async function superSmartProxy(req, res) {
   const rawUrl = req.query.targetUrl;
   if (!rawUrl) return res.status(400).send('Missing URL');
@@ -454,7 +564,9 @@ module.exports = async function superSmartProxy(req, res) {
     }
     
     // Set content type
-    const contentType = response.headers['content-type'] || 'text/plain';
+    const contentType = response.headers['content-type'] || 
+                       (targetUrl.match(/\.(jpg|jpeg|png|gif|webp|svg)$/i) ? 'image/'+RegExp.$1.toLowerCase() : 'text/plain');
+    
     res.removeHeader('X-Powered-By');
     res.set('Content-Type', contentType);
     
@@ -466,9 +578,7 @@ module.exports = async function superSmartProxy(req, res) {
       'expires',
       'last-modified',
       'etag',
-      'vary',
-      'access-control-allow-origin',
-      'content-security-policy'
+      'vary'
     ];
     
     passthroughHeaders.forEach(header => {
@@ -478,7 +588,6 @@ module.exports = async function superSmartProxy(req, res) {
     });
     
     // Explicitly set content-encoding to identity (uncompressed)
-    // since we're handling decompression ourselves
     res.set('Content-Encoding', 'identity');
     
     // Set a generic server header
@@ -489,63 +598,55 @@ module.exports = async function superSmartProxy(req, res) {
     
     // Special handling for HTML content - rewrite URLs to go through our proxy
     if (contentType && contentType.includes('text/html') && isMainRequest) {
-      const buffer = await response.getBuffer();
-      let html = buffer.toString();
-      
-      // Get the current hostname and protocol for constructing proxy URLs
-      const protocol = req.protocol;
-      const host = req.get('host');
-      
-      // Replace resource URLs to go through our proxy
-      const urlRegex = /(src|href|action|data-src)=["'](?!data:|blob:|javascript:|#|mailto:)([^"']+)["']/gi;
-      html = html.replace(urlRegex, (match, attr, url) => {
-        const absoluteUrl = mapResourceUrl(url, targetUrl);
-        const encodedUrl = encodeURIComponent(absoluteUrl);
-        return `${attr}="${protocol}://${host}${proxyPath}?targetUrl=${encodedUrl}"`;
-      });
-      
-      // Replace URLs in inline styles
-      const styleRegex = /url\(['"]?(?!data:|blob:)([^'")\s]+)['"]?\)/gi;
-      html = html.replace(styleRegex, (match, url) => {
-        const absoluteUrl = mapResourceUrl(url, targetUrl);
-        const encodedUrl = encodeURIComponent(absoluteUrl);
-        return `url("${protocol}://${host}${proxyPath}?targetUrl=${encodedUrl}")`;
-      });
-      
-      // Replace URLs in JavaScript
-      const jsUrlRegex = /['"]https?:\/\/[^'"]+['"]/gi;
-      html = html.replace(jsUrlRegex, (match) => {
-        // Only replace if it's not already pointing to our proxy
-        if (match.includes(host + proxyPath)) return match;
+      console.log('Rewriting HTML content');
+      try {
+        // Use buffer approach for HTML content to process it
+        const buffer = await response.getBuffer();
+        let html = buffer.toString();
         
-        const url = match.slice(1, -1); // Remove quotes
-        const encodedUrl = encodeURIComponent(url);
-        return `"${protocol}://${host}${proxyPath}?targetUrl=${encodedUrl}"`;
-      });
-      
-      // Add our own base tag to ensure relative URLs work correctly
-      const baseUrl = new URL(targetUrl);
-      const baseTag = `<base href="${baseUrl.protocol}//${baseUrl.host}${baseUrl.pathname}" />`;
-      html = html.replace(/<head>/i, `<head>${baseTag}`);
-      
-      // Send the modified HTML
-      return res.send(html);
+        // Get the current hostname and protocol for constructing proxy URLs
+        const protocol = req.protocol;
+        const host = req.get('host');
+        
+        // Rewrite HTML to fix URLs
+        html = rewriteHtml(html, targetUrl, proxyPath, protocol, host);
+        
+        // Send the modified HTML
+        return res.send(html);
+      } catch (err) {
+        console.error('Error processing HTML:', err);
+        // Fallback to raw response if HTML processing fails
+        return res.send(await response.getBuffer());
+      }
     }
     
-    // For non-HTML content or XHR requests, stream directly
-    response.stream.pipe(res);
-    
-    // Handle errors on the stream
-    response.stream.on('error', (err) => {
-      console.error('Stream error:', err);
-      // Only send error if headers haven't been sent yet
-      if (!res.headersSent) {
-        res.status(500).send(`Stream error: ${err.message}`);
-      } else {
-        // If headers already sent, just end the response
-        res.end();
+    // For binary files and non-HTML content, use buffer approach
+    // to avoid streaming issues
+    if (contentType && 
+        (contentType.includes('image/') || 
+         contentType.includes('video/') || 
+         contentType.includes('audio/') ||
+         contentType.includes('application/octet-stream') ||
+         contentType.includes('application/pdf'))) {
+      console.log('Sending binary content as buffer');
+      try {
+        const buffer = await response.getBuffer();
+        return res.send(buffer);
+      } catch (err) {
+        console.error('Error processing binary content:', err);
+        return res.status(500).send('Error processing binary content');
       }
-    });
+    }
+    
+    // For everything else, try the buffer approach
+    try {
+      console.log('Sending content as buffer');
+      const buffer = await response.getBuffer();
+      res.send(buffer);
+    } catch (streamErr) {
+      console.error('Buffer send error:', streamErr);
+      res.status(500).send('Error sending content');
+    }
   } catch (err) {
     console.error('Proxy error:', err.message);
     res.status(500).send(`Proxy error: ${err.message}`);
