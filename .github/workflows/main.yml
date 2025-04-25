@@ -17,7 +17,7 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@v3
       with:
-        node-version: '18.x'
+        node-version: '22.14.0'
         cache: 'npm'
         
     - name: Install dependencies
@@ -59,12 +59,3 @@ jobs:
       with:
         service-id: d05e34juibrs73fk9cg0
         api-key: rnd_51MLhgDeX54ZaryCcuWpdEKy61Ps
-        wait-for-deploy: true
-        
-    - name: Deploy to Render Staging
-      if: github.ref == 'refs/heads/develop'
-      uses: johnbeynon/render-deploy-action@v0.0.8
-      with:
-        service-id: d05e34juibrs73fk9cg0
-        api-key: rnd_51MLhgDeX54ZaryCcuWpdEKy61Ps
-        wait-for-deploy: true
