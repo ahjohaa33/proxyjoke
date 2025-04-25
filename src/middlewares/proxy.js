@@ -72,92 +72,172 @@ async function customFetch(url, options = {}) {
     await randomizeRequestTiming();
 
     console.log('Making request to:', url);
-
     
     return new Promise((resolve, reject) => {
-      const urlObj = new URL(url);
-      const isHttps = urlObj.protocol === 'https:';
-      
-      const requestOptions = {
-        method: options.method || 'GET',
-        headers: options.headers || {},
-        hostname: urlObj.hostname, // Changed from 'host' to 'hostname'
-        port: urlObj.port || (isHttps ? 443 : 80),
-        path: urlObj.pathname + urlObj.search,
-        timeout: 60000,
-        rejectUnauthorized: false, // Temporarily disable cert verification
-        servername: options.originalHostname || urlObj.hostname,
-        // Force HTTP/1.1 to avoid potential HTTP/2 parsing issues
-        ALPNProtocols: ['http/1.1'] 
-      };
-
-
-      console.log('Request options:', {
-        ...requestOptions,
-        headers: Object.keys(requestOptions.headers).reduce((acc, key) => {
-          acc[key] = key.toLowerCase().includes('authorization') ? '[REDACTED]' : requestOptions.headers[key];
-          return acc;
-        }, {})
-      });
-  
-      // Apply TLS fingerprinting more carefully
-      if (isHttps) {
-        const tlsProfile = getRandomTLSFingerprint();
-        requestOptions.ciphers = tlsProfile.ciphers.join(':');
-        requestOptions.minVersion = 'TLSv1.2';
-        requestOptions.maxVersion = 'TLSv1.3';
-      }
-  
-      let rawData = Buffer.alloc(0);
-      const clientRequest = (isHttps ? https : http).request(requestOptions, (response) => {
-        const { statusCode } = response;
+      try {
+        const urlObj = new URL(url);
+        const isHttps = urlObj.protocol === 'https:';
         
-        response.on('data', (chunk) => {
-          rawData = Buffer.concat([rawData, chunk]);
-        });
+        const requestOptions = {
+          method: options.method || 'GET',
+          headers: options.headers || {},
+          hostname: urlObj.hostname,
+          port: urlObj.port || (isHttps ? 443 : 80),
+          path: urlObj.pathname + urlObj.search,
+          timeout: 60000,
+          rejectUnauthorized: false,
+          servername: options.originalHostname || urlObj.hostname,
+          ALPNProtocols: ['http/1.1']
+        };
         
-        response.on('end', () => {
-          resolve({
-            status: statusCode,
-            headers: response.headers,
-            rawBody: rawData,
-            text: async () => rawData.toString()
+        console.log('Request options:', requestOptions);
+        
+        // Apply TLS fingerprinting more carefully
+        if (isHttps) {
+          const tlsProfile = getRandomTLSFingerprint();
+          requestOptions.ciphers = tlsProfile.ciphers.join(':');
+          requestOptions.minVersion = 'TLSv1.2';
+          requestOptions.maxVersion = 'TLSv1.3';
+        }
+    
+        let rawData = Buffer.alloc(0);
+        const clientRequest = (isHttps ? https : http).request(requestOptions, (response) => {
+          console.log(`Response received with status: ${response.statusCode}`);
+          console.log(`Response headers: ${JSON.stringify(response.headers)}`);
+          
+          const { statusCode } = response;
+          
+          response.on('data', (chunk) => {
+            rawData = Buffer.concat([rawData, chunk]);
+          });
+          
+          response.on('end', () => {
+            console.log(`Response complete, received ${rawData.length} bytes`);
+            resolve({
+              status: statusCode,
+              headers: response.headers,
+              rawBody: rawData,
+              text: async () => rawData.toString()
+            });
           });
         });
-      });
-  
-      // Improved error handling
-      clientRequest.on('error', (err) => {
-        console.error('Detailed Request Error:', {
-          url: url,
-          message: err.message,
-          stack: err.stack,
-          code: err.code,
-          syscall: err.syscall,
-          address: urlObj.hostname,
-          port: urlObj.port || (isHttps ? 443 : 80)
+    
+        // Improved error handling
+        clientRequest.on('error', (err) => {
+          console.error('Detailed Request Error:', {
+            url: url,
+            message: err.message,
+            stack: err.stack,
+            code: err.code,
+            syscall: err.syscall,
+            address: urlObj.hostname,
+            port: urlObj.port || (isHttps ? 443 : 80)
+          });
+          reject(new Error(`Request failed: ${err.message}`));
         });
-        reject(new Error(`Request failed: ${err.message}`));
-      });
-  
-      clientRequest.on('socket', (socket) => {
-        socket.on('error', (err) => {
-          console.error('Socket Error:', err);
-          reject(new Error(`Socket error: ${err.message}`));
+    
+        clientRequest.on('socket', (socket) => {
+          socket.on('error', (err) => {
+            console.error('Socket Error:', err);
+            reject(new Error(`Socket error: ${err.message}`));
+          });
         });
-      });
-  
-      clientRequest.on('timeout', () => {
-        clientRequest.destroy(new Error(`Request timeout after ${requestOptions.timeout}ms`));
-      });
-  
-      if (options.body) {
-        clientRequest.write(options.body);
+    
+        clientRequest.on('timeout', () => {
+          console.error('Request timeout');
+          clientRequest.destroy(new Error(`Request timeout after ${requestOptions.timeout}ms`));
+        });
+    
+        if (options.body) {
+          clientRequest.write(options.body);
+        }
+    
+        clientRequest.end();
+      } catch (err) {
+        console.error('Error in customFetch setup:', err);
+        reject(err);
       }
-  
-      clientRequest.end();
     });
+}
+
+// Also update your error handling in the main middleware function:
+module.exports = async function superSmartProxy(req, res) {
+  const rawUrl = req.query.targetUrl;
+  if (!rawUrl) return res.status(400).send('Missing URL');
+
+  const targetUrl = sanitizeUrl(rawUrl);
+
+  try {
+    // Add variable delay to requests to prevent timing-based fingerprinting
+    await randomizeRequestTiming();
+    
+    const response = await fetchWithAdvancedSpoofing(targetUrl);
+    const contentType = response.headers['content-type'] || 'text/plain';
+    
+    // Check if we actually got a response body
+    if (!response.rawBody || response.rawBody.length === 0) {
+      console.error('Empty response body received');
+      return res.status(502).send('Empty response received from target server');
+    }
+    
+    const rawBody = await response.text();
+    
+    try {
+      // Process HTML to remove fingerprinting scripts and inject protections
+      const processedBody = await processContent(contentType, rawBody);
+
+      // Set response headers that don't leak information
+      res.removeHeader('X-Powered-By'); // Remove Express fingerprint
+      res.removeHeader('Server');
+      
+      // Block any headers that might reveal the proxy
+      const blockedHeaders = [
+        'x-forwarded-for',
+        'x-real-ip',
+        'cf-connecting-ip',
+        'true-client-ip',
+        'x-client-ip',
+        'forwarded',
+        'via',
+        'x-served-by',
+        'x-cache',
+        'x-timer',
+        'x-request-id',
+        'x-correlation-id'
+      ];
+      
+      blockedHeaders.forEach(header => {
+        res.removeHeader(header);
+      });
+      
+      // Set fake server headers to blend in
+      const servers = ['Apache/2.4.41', 'nginx/1.18.0', 'Microsoft-IIS/10.0', 'cloudflare'];
+      res.set('Server', servers[Math.floor(Math.random() * servers.length)]);
+      res.set('Content-Type', contentType);
+      
+      // Add some security headers
+      res.set('X-Content-Type-Options', 'nosniff');
+      res.set('X-Frame-Options', 'DENY');
+      res.set('Referrer-Policy', 'no-referrer');
+      
+      // Randomize date slightly to prevent timing analysis
+      const date = new Date();
+      date.setSeconds(date.getSeconds() + Math.floor(Math.random() * 10));
+      res.set('Date', date.toUTCString());
+      
+      res.status(response.status).send(processedBody);
+    } catch (processError) {
+      console.error('Error processing response:', processError);
+      // If processing fails, send the raw response
+      res.set('Content-Type', contentType);
+      res.status(response.status).send(rawBody);
+    }
+  } catch (err) {
+    console.error('Proxy error complete details:', err);
+    // Generic error message to avoid leaking information
+    res.status(500).send(`Proxy error occurred: ${err.message}`);
   }
+};
 
 // Generate randomized browser canvas fingerprint noise
 function generateRandomCanvasFingerprint() {
@@ -378,133 +458,168 @@ async function fetchWithAdvancedSpoofing(url) {
 
 // Process HTML content to remove/modify fingerprinting scripts
 async function processContent(contentType, body) {
-  // Only process HTML content
-  if (!contentType || !contentType.includes('text/html')) {
-    return body;
-  }
-
-  try {
-    const dom = new JSDOM(body);
-    const document = dom.window.document;
-    
-    // Remove known fingerprinting scripts
-    const fingerprintingServices = [
-      'fingerprintjs', 
-      'analytics', 
-      'tracking', 
-      'fpcdn.io',
-      'scorecardresearch',
-      'clarity.ms',
-      'hotjar',
-      'mouseflow',
-      'google-analytics',
-      'gtm.js',
-      'facebook.net',
-      'doubleclick.net'
-    ];
-    
-    // Remove scripts that might be used for fingerprinting
-    const scripts = document.querySelectorAll('script');
-    scripts.forEach(script => {
-      const src = script.getAttribute('src') || '';
-      const content = script.textContent || '';
+    // Only process HTML content
+    if (!contentType || !contentType.includes('text/html')) {
+      console.log('Skipping content processing for non-HTML content type:', contentType);
+      return body;
+    }
+  
+    try {
+      console.log('Processing HTML content...');
+      const dom = new JSDOM(body);
+      const document = dom.window.document;
       
-      // Remove scripts from known fingerprinting services
-      if (fingerprintingServices.some(service => src.includes(service))) {
-        script.parentNode.removeChild(script);
-        return;
-      }
-      
-      // Remove inline scripts that look like they might be fingerprinting
-      const fingerprintPatterns = [
-        'canvas', 'fingerprint', 'webgl', 'font', 'AudioContext', 
-        'getBattery', 'navigator.userAgent', 'navigator.platform',
-        'hardwareConcurrency', 'deviceMemory', 'screenX', 'pixelDepth'
+      // Remove known fingerprinting scripts
+      const fingerprintingServices = [
+        'fingerprintjs', 
+        'analytics', 
+        'tracking', 
+        'fpcdn.io',
+        'scorecardresearch',
+        'clarity.ms',
+        'hotjar',
+        'mouseflow',
+        'google-analytics',
+        'gtm.js',
+        'facebook.net',
+        'doubleclick.net'
       ];
       
-      if (fingerprintPatterns.some(pattern => content.includes(pattern))) {
-        script.parentNode.removeChild(script);
+      // Remove scripts that might be used for fingerprinting
+      const scripts = document.querySelectorAll('script');
+      console.log(`Found ${scripts.length} script tags to examine`);
+      
+      let removedCount = 0;
+      scripts.forEach(script => {
+        const src = script.getAttribute('src') || '';
+        const content = script.textContent || '';
+        
+        // Remove scripts from known fingerprinting services
+        if (fingerprintingServices.some(service => src.includes(service))) {
+          script.parentNode.removeChild(script);
+          removedCount++;
+          return;
+        }
+        
+        // Remove inline scripts that look like they might be fingerprinting
+        const fingerprintPatterns = [
+          'canvas', 'fingerprint', 'webgl', 'font', 'AudioContext', 
+          'getBattery', 'navigator.userAgent', 'navigator.platform',
+          'hardwareConcurrency', 'deviceMemory', 'screenX', 'pixelDepth'
+        ];
+        
+        if (fingerprintPatterns.some(pattern => content.includes(pattern))) {
+          script.parentNode.removeChild(script);
+          removedCount++;
+        }
+      });
+      
+      console.log(`Removed ${removedCount} fingerprinting-related scripts`);
+      
+      // Inject our anti-fingerprinting script at the top of the head
+      const head = document.querySelector('head');
+      if (head) {
+        const antiFingerprint = document.createElement('script');
+        antiFingerprint.textContent = generateAntiFingerprinting();
+        head.insertBefore(antiFingerprint, head.firstChild);
+        console.log('Injected anti-fingerprinting script');
+      } else {
+        console.log('No head element found, skipping script injection');
       }
-    });
-    
-    // Inject our anti-fingerprinting script at the top of the head
-    const head = document.querySelector('head');
-    if (head) {
-      const antiFingerprint = document.createElement('script');
-      antiFingerprint.textContent = generateAntiFingerprinting();
-      head.insertBefore(antiFingerprint, head.firstChild);
+      
+      return dom.serialize();
+    } catch (err) {
+      console.error('Error processing HTML content:', err);
+      // If processing fails, try a simpler approach to inject the script
+      try {
+        console.log('Falling back to string replacement for script injection');
+        const injectionPoint = '<head>';
+        if (body.includes(injectionPoint)) {
+          return body.replace(injectionPoint, `<head>${generateAntiFingerprinting()}`);
+        }
+        console.log('No head tag found for fallback injection');
+      } catch (fallbackErr) {
+        console.error('Fallback injection also failed:', fallbackErr);
+      }
+      // Return the original body as a last resort
+      return body;
     }
-    
-    return dom.serialize();
-  } catch (err) {
-    // If processing fails, inject the script directly as a string at the top
-    const injectionPoint = '<head>';
-    if (body.includes(injectionPoint)) {
-      return body.replace(injectionPoint, `<head>${generateAntiFingerprinting()}`);
-    }
-    return body;
   }
-}
 
 module.exports = async function superSmartProxy(req, res) {
-  const rawUrl = req.query.targetUrl;
-  if (!rawUrl) return res.status(400).send('Missing URL');
-
-  const targetUrl = sanitizeUrl(rawUrl);
-
-  try {
-    // Add variable delay to requests to prevent timing-based fingerprinting
-    await randomizeRequestTiming();
-    
-    const response = await fetchWithAdvancedSpoofing(targetUrl);
-    const contentType = response.headers['content-type'] || 'text/plain';
-    const rawBody = await response.text();
-    
-    // Process HTML to remove fingerprinting scripts and inject protections
-    const processedBody = await processContent(contentType, rawBody);
-
-    // Set response headers that don't leak information
-    res.removeHeader('X-Powered-By'); // Remove Express fingerprint
-    res.removeHeader('Server');
-    
-    // Block any headers that might reveal the proxy
-    const blockedHeaders = [
-      'x-forwarded-for',
-      'x-real-ip',
-      'cf-connecting-ip',
-      'true-client-ip',
-      'x-client-ip',
-      'forwarded',
-      'via',
-      'x-served-by',
-      'x-cache',
-      'x-timer',
-      'x-request-id',
-      'x-correlation-id'
-    ];
-    
-    blockedHeaders.forEach(header => {
-      res.removeHeader(header);
-    });
-    
-    // Set fake server headers to blend in
-    const servers = ['Apache/2.4.41', 'nginx/1.18.0', 'Microsoft-IIS/10.0', 'cloudflare'];
-    res.set('Server', servers[Math.floor(Math.random() * servers.length)]);
-    res.set('Content-Type', contentType);
-    
-    // Add some security headers
-    res.set('X-Content-Type-Options', 'nosniff');
-    res.set('X-Frame-Options', 'DENY');
-    res.set('Referrer-Policy', 'no-referrer');
-    
-    // Randomize date slightly to prevent timing analysis
-    const date = new Date();
-    date.setSeconds(date.getSeconds() + Math.floor(Math.random() * 10));
-    res.set('Date', date.toUTCString());
-    
-    res.status(response.status).send(processedBody);
-  } catch (err) {
-    // Generic error message to avoid leaking information
-    res.status(500).send(`Proxy error occurred`);
-  }
+    const rawUrl = req.query.targetUrl;
+    if (!rawUrl) return res.status(400).send('Missing URL');
+  
+    const targetUrl = sanitizeUrl(rawUrl);
+  
+    try {
+      // Add variable delay to requests to prevent timing-based fingerprinting
+      await randomizeRequestTiming();
+      
+      const response = await fetchWithAdvancedSpoofing(targetUrl);
+      const contentType = response.headers['content-type'] || 'text/plain';
+      
+      // Check if we actually got a response body
+      if (!response.rawBody || response.rawBody.length === 0) {
+        console.error('Empty response body received');
+        return res.status(502).send('Empty response received from target server');
+      }
+      
+      const rawBody = await response.text();
+      
+      try {
+        // Process HTML to remove fingerprinting scripts and inject protections
+        const processedBody = await processContent(contentType, rawBody);
+  
+        // Set response headers that don't leak information
+        res.removeHeader('X-Powered-By'); // Remove Express fingerprint
+        res.removeHeader('Server');
+        
+        // Block any headers that might reveal the proxy
+        const blockedHeaders = [
+          'x-forwarded-for',
+          'x-real-ip',
+          'cf-connecting-ip',
+          'true-client-ip',
+          'x-client-ip',
+          'forwarded',
+          'via',
+          'x-served-by',
+          'x-cache',
+          'x-timer',
+          'x-request-id',
+          'x-correlation-id'
+        ];
+        
+        blockedHeaders.forEach(header => {
+          res.removeHeader(header);
+        });
+        
+        // Set fake server headers to blend in
+        const servers = ['Apache/2.4.41', 'nginx/1.18.0', 'Microsoft-IIS/10.0', 'cloudflare'];
+        res.set('Server', servers[Math.floor(Math.random() * servers.length)]);
+        res.set('Content-Type', contentType);
+        
+        // Add some security headers
+        res.set('X-Content-Type-Options', 'nosniff');
+        res.set('X-Frame-Options', 'DENY');
+        res.set('Referrer-Policy', 'no-referrer');
+        
+        // Randomize date slightly to prevent timing analysis
+        const date = new Date();
+        date.setSeconds(date.getSeconds() + Math.floor(Math.random() * 10));
+        res.set('Date', date.toUTCString());
+        
+        res.status(response.status).send(processedBody);
+      } catch (processError) {
+        console.error('Error processing response:', processError);
+        // If processing fails, send the raw response
+        res.set('Content-Type', contentType);
+        res.status(response.status).send(rawBody);
+      }
+    } catch (err) {
+      console.error('Proxy error complete details:', err);
+      // Generic error message to avoid leaking information
+      res.status(500).send(`Proxy error occurred: ${err.message}`);
+    }
 };
