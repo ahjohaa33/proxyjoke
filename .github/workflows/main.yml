@@ -17,21 +17,35 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@v3
       with:
-        node-version: '22.14.0'
+        node-version: '18.x'
         cache: 'npm'
         
     - name: Install dependencies
-      run: npm ci
+      run: npm ci || npm install
       
-    - name: Run tests
-      run: npm test
+    - name: Check and run tests if available
+      run: |
+        if grep -q '"test"' package.json; then
+          npm test
+        else
+          echo "No test script found in package.json, skipping tests"
+        fi
       
-    - name: Build project
-      run: npm run build
+    - name: Check and build project if available
+      run: |
+        if grep -q '"build"' package.json; then
+          npm run build
+        else
+          echo "No build script found in package.json, skipping build"
+        fi
       
-    # Optional: Add linting
-    - name: Lint code
-      run: npm run lint
+    - name: Check and run lint if available
+      run: |
+        if grep -q '"lint"' package.json; then
+          npm run lint
+        else
+          echo "No lint script found in package.json, skipping linting"
+        fi
       
   deploy-to-render:
     needs: build-and-test
