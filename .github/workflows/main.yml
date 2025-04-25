@@ -1,0 +1,56 @@
+name: Render CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '22.14.0'
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: npm ci
+      
+    - name: Run tests
+      run: npm test
+      
+    - name: Build project
+      run: npm run build
+      
+    # Optional: Add linting
+    - name: Lint code
+      run: npm run lint
+      
+  deploy-to-render:
+    needs: build-and-test
+    if: github.event_name == 'push' # Only deploy on push events, not PRs
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Deploy to Render Production
+      if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+      uses: johnbeynon/render-deploy-action@v0.0.8
+      with:
+        service-id: d05e34juibrs73fk9cg0
+        api-key: rnd_51MLhgDeX54ZaryCcuWpdEKy61Ps
+        wait-for-deploy: true
+        
+    - name: Deploy to Render Staging
+      if: github.ref == 'refs/heads/develop'
+      uses: johnbeynon/render-deploy-action@v0.0.8
+      with:
+        service-id: d05e34juibrs73fk9cg0
+        api-key: rnd_51MLhgDeX54ZaryCcuWpdEKy61Ps
+        wait-for-deploy: true
