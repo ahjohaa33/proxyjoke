@@ -1,18 +1,43 @@
 [
     {
-      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
-      "referer": "https://www.google.com",
-      "acceptLanguage": "en-US,en;q=0.9"
+        "name": "Chrome 124 on Windows 11",
+        "userAgent": "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "acceptLanguage": "en-US,en;q=0.9"
     },
     {
-      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_0) AppleWebKit/605.1.15 Safari/605.1.15",
-      "referer": "https://www.bing.com",
-      "acceptLanguage": "en-GB,en;q=0.8"
+        "name": "Chrome 124 on macOS 14",
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "acceptLanguage": "en-US,en;q=0.9"
     },
     {
-      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) Gecko/20100101 Firefox/115.0",
-      "referer": "https://duckduckgo.com",
-      "acceptLanguage": "en-US,en;q=0.7"
+        "name": "Firefox 124 on Windows 11",
+        "userAgent": "Mozilla/5.0 (Windows NT 11.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+        "acceptLanguage": "en-US,en;q=0.8"
+    },
+    {
+        "name": "Firefox 124 on macOS 14",
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.5; rv:124.0) Gecko/20100101 Firefox/124.0",
+        "acceptLanguage": "en-US,en;q=0.8"
+    },
+    {
+        "name": "Edge 124 on Windows 11",
+        "userAgent": "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0",
+        "acceptLanguage": "en-US,en;q=0.9"
+    },
+    {
+        "name": "Safari 17.5 on macOS 14",
+        "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+        "acceptLanguage": "en-US,en;q=0.9"
+    },
+    {
+        "name": "Safari 17.5 on iOS 18",
+        "userAgent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+        "acceptLanguage": "en-US,en;q=0.9"
+    },
+    {
+        "name": "Chrome 124 on Android 15",
+        "userAgent": "Mozilla/5.0 (Linux; Android 15; SM-S908B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+        "acceptLanguage": "en-US,en;q=0.9"
     }
   ]
   

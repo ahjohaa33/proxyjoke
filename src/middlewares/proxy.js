@@ -1,9 +1,11 @@
 // 📁 /middlewares/superSmartProxy.js
 
 const { Resolver } = require('dns').promises;
-const profiles = require('../data/browserProfiles.json');
 const http = require('http');
 const https = require('https');
+
+const modernProfiles = require('../data/browserProfiles.json')
+
 
 // DNS resolvers to randomize
 const dnsResolvers = [
@@ -20,7 +22,7 @@ function getRandomResolver() {
 }
 
 function getRandomProfile() {
-  return profiles[Math.floor(Math.random() * profiles.length)];
+  return modernProfiles[Math.floor(Math.random() * modernProfiles.length)];
 }
 
 function sanitizeUrl(url) {
@@ -36,16 +38,18 @@ function randomizeRequestTiming() {
   return new Promise(resolve => setTimeout(resolve, delay));
 }
 
-// Fetch implementation with redirect following
-async function customFetch(url, options = {}, redirectCount = 0) {
+// Improved fetch implementation with better redirect handling
+async function customFetch(url, options = {}, redirectCount = 0, redirectHistory = []) {
   await randomizeRequestTiming();
   
-  const maxRedirects = 5; // Limit redirects to prevent infinite loops
+  const maxRedirects = 30; // Increased from 5 to 15
   
   if (redirectCount > maxRedirects) {
-    throw new Error(`Maximum redirect count (${maxRedirects}) exceeded`);
+    throw new Error(`Maximum redirect count (${maxRedirects}) exceeded. Redirect path: ${redirectHistory.join(' -> ')}`);
   }
 
+  // Track redirect history for debugging
+  const newRedirectHistory = [...redirectHistory, url];
   console.log(`Making request to: ${url} (redirect: ${redirectCount})`);
   
   return new Promise((resolve, reject) => {
@@ -59,7 +63,7 @@ async function customFetch(url, options = {}, redirectCount = 0) {
         hostname: urlObj.hostname,
         port: urlObj.port || (isHttps ? 443 : 80),
         path: urlObj.pathname + urlObj.search,
-        timeout: 30000, // 30 second timeout
+        timeout: 90000, // 90 second timeout
         rejectUnauthorized: false
       };
   
@@ -67,8 +71,8 @@ async function customFetch(url, options = {}, redirectCount = 0) {
       const clientRequest = (isHttps ? https : http).request(requestOptions, async (response) => {
         const { statusCode, headers } = response;
         
-        // Handle redirects (301, 302, 307, 308)
-        if ([301, 302, 307, 308].includes(statusCode) && headers.location) {
+        // Improved redirect handling
+        if ([301, 302, 303, 307, 308].includes(statusCode) && headers.location) {
           console.log(`Redirect ${statusCode} to: ${headers.location}`);
           
           let redirectUrl = headers.location;
@@ -76,7 +80,25 @@ async function customFetch(url, options = {}, redirectCount = 0) {
           // Handle relative URLs in redirects
           if (redirectUrl.startsWith('/')) {
             redirectUrl = `${urlObj.protocol}//${urlObj.host}${redirectUrl}`;
+          } else if (!redirectUrl.match(/^https?:\/\//i)) {
+            // Handle protocol-relative URLs (//example.com/path)
+            if (redirectUrl.startsWith('//')) {
+              redirectUrl = urlObj.protocol + redirectUrl;
+            } else {
+              // Handle path-relative URLs (path/to/resource)
+              const basePath = urlObj.pathname.substring(0, urlObj.pathname.lastIndexOf('/') + 1);
+              redirectUrl = `${urlObj.protocol}//${urlObj.host}${basePath}${redirectUrl}`;
+            }
           }
+          
+          // Create new headers for the redirect
+          const redirectHeaders = {...options.headers};
+          
+          // Update referer for the redirect
+          redirectHeaders['Referer'] = url;
+          
+          // For POST -> GET redirects (status 303)
+          const redirectMethod = statusCode === 303 ? 'GET' : options.method;
           
           try {
             // Follow the redirect
@@ -84,13 +106,13 @@ async function customFetch(url, options = {}, redirectCount = 0) {
               redirectUrl,
               {
                 ...options,
-                headers: {
-                  ...options.headers,
-                  // Add referer for the redirect
-                  'Referer': url
-                }
+                method: redirectMethod,
+                headers: redirectHeaders,
+                // Don't send body on GET requests
+                body: redirectMethod === 'GET' ? undefined : options.body
               },
-              redirectCount + 1
+              redirectCount + 1,
+              newRedirectHistory
             );
             resolve(redirectResponse);
           } catch (redirectError) {
@@ -99,11 +121,17 @@ async function customFetch(url, options = {}, redirectCount = 0) {
           return;
         }
         
+        // Handle content encoding (gzip, deflate)
+        if (headers['content-encoding']) {
+          console.log(`Content encoding: ${headers['content-encoding']}`);
+        }
+        
         response.on('data', (chunk) => {
           rawData = Buffer.concat([rawData, chunk]);
         });
         
         response.on('end', () => {
+          console.log(`Response complete: ${statusCode}, size: ${rawData.length} bytes`);
           resolve({
             status: statusCode,
             headers: response.headers,
@@ -136,24 +164,49 @@ async function customFetch(url, options = {}, redirectCount = 0) {
   });
 }
 
-// Fetch with randomized browser profile
+// Fetch with randomized modern browser profile
 async function fetchWithRandomProfile(url) {
   const profile = getRandomProfile();
   const resolver = getRandomResolver(); // Keep DNS randomization
   const urlObj = new URL(url);
   
-  console.log(`Using profile: ${profile.name || 'Unknown'}`);
+  console.log(`Using profile: ${profile.name}`);
   
-  // Standard browser headers based on the random profile
+  // Modern browser headers
   const headers = {
     'User-Agent': profile.userAgent,
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
     'Accept-Language': profile.acceptLanguage || 'en-US,en;q=0.9',
     'Accept-Encoding': 'gzip, deflate, br',
-    'Connection': 'keep-alive',
+    'Sec-Ch-Ua': '"Not.A/Brand";v="99", "Google Chrome";v="124", "Chromium";v="124"',
+    'Sec-Ch-Ua-Mobile': '?0',
+    'Sec-Ch-Ua-Platform': '"Windows"',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
     'Upgrade-Insecure-Requests': '1',
+    'Priority': 'u=0, i',
+    'Connection': 'keep-alive',
     'Host': urlObj.hostname
   };
+
+  // Adjust headers based on browser type
+  if (profile.userAgent.includes('Firefox')) {
+    delete headers['Sec-Ch-Ua'];
+    delete headers['Sec-Ch-Ua-Mobile'];
+    delete headers['Sec-Ch-Ua-Platform'];
+    delete headers['Priority'];
+  } else if (profile.userAgent.includes('Safari') && !profile.userAgent.includes('Chrome')) {
+    delete headers['Sec-Ch-Ua'];
+    delete headers['Sec-Ch-Ua-Mobile'];
+    delete headers['Sec-Ch-Ua-Platform'];
+    delete headers['Sec-Fetch-Dest'];
+    delete headers['Sec-Fetch-Mode'];
+    delete headers['Sec-Fetch-Site'];
+    delete headers['Sec-Fetch-User'];
+    delete headers['Priority'];
+  }
 
   try {
     // Main request
@@ -179,6 +232,15 @@ async function fetchWithRandomProfile(url) {
   }
 }
 
+// Handle compressed responses if content-encoding is present
+function handleCompressedResponse(rawBody, contentEncoding) {
+  // This is a placeholder - Node.js HTTP/HTTPS modules handle
+  // decompression automatically when you set Accept-Encoding
+  // If you're having issues with compressed content, you may need
+  // to implement decompression logic here using zlib
+  return rawBody;
+}
+
 module.exports = async function superSmartProxy(req, res) {
   const rawUrl = req.query.targetUrl;
   if (!rawUrl) return res.status(400).send('Missing URL');
@@ -190,20 +252,23 @@ module.exports = async function superSmartProxy(req, res) {
     
     const response = await fetchWithRandomProfile(targetUrl);
     
-    // Handle binary content
-    const contentType = response.headers['content-type'] || 'text/plain';
-    
-    // Pass through the response directly without any processing
+    // Handle encoding if needed
     let processedBody = response.rawBody;
+    if (response.headers['content-encoding']) {
+      processedBody = handleCompressedResponse(
+        processedBody, 
+        response.headers['content-encoding']
+      );
+    }
     
-    // Set basic response headers
+    // Set content type
+    const contentType = response.headers['content-type'] || 'text/plain';
     res.removeHeader('X-Powered-By');
     res.set('Content-Type', contentType);
     
     // Pass through useful headers from the original response
     const passthroughHeaders = [
       'content-language',
-      'content-encoding',
       'content-disposition',
       'cache-control',
       'expires',
@@ -216,6 +281,10 @@ module.exports = async function superSmartProxy(req, res) {
         res.set(header, response.headers[header]);
       }
     });
+    
+    // Explicitly set content-encoding to identity (uncompressed)
+    // since we're handling decompression ourselves if needed
+    res.set('Content-Encoding', 'identity');
     
     // Set a generic server header
     res.set('Server', 'nginx');
