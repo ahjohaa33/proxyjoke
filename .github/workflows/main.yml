@@ -57,5 +57,5 @@ jobs:
       if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
       uses: johnbeynon/render-deploy-action@v0.0.8
       with:
-        service-id: d05e34juibrs73fk9cg0
+        service-id: srv-d05e34juibrs73fk9cg0
         api-key: rnd_51MLhgDeX54ZaryCcuWpdEKy61Ps
