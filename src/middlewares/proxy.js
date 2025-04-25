@@ -3,9 +3,10 @@
 const { Resolver } = require('dns').promises;
 const http = require('http');
 const https = require('https');
+const zlib = require('zlib');
+const Stream = require('stream');
 
-const modernProfiles = require('../data/browserProfiles.json')
-
+const modernProfiles = require('../data/browserProfiles.json');
 
 // DNS resolvers to randomize
 const dnsResolvers = [
@@ -38,11 +39,11 @@ function randomizeRequestTiming() {
   return new Promise(resolve => setTimeout(resolve, delay));
 }
 
-// Improved fetch implementation with better redirect handling
+// Improved fetch implementation with better redirect handling and streaming support
 async function customFetch(url, options = {}, redirectCount = 0, redirectHistory = []) {
   await randomizeRequestTiming();
   
-  const maxRedirects = 30; // Increased from 5 to 15
+  const maxRedirects = 30;
   
   if (redirectCount > maxRedirects) {
     throw new Error(`Maximum redirect count (${maxRedirects}) exceeded. Redirect path: ${redirectHistory.join(' -> ')}`);
@@ -66,8 +67,7 @@ async function customFetch(url, options = {}, redirectCount = 0, redirectHistory
         timeout: 90000, // 90 second timeout
         rejectUnauthorized: false
       };
-  
-      let rawData = Buffer.alloc(0);
+      
       const clientRequest = (isHttps ? https : http).request(requestOptions, async (response) => {
         const { statusCode, headers } = response;
         
@@ -121,41 +121,67 @@ async function customFetch(url, options = {}, redirectCount = 0, redirectHistory
           return;
         }
         
-        // Handle content encoding (gzip, deflate)
-        if (headers['content-encoding']) {
-          console.log(`Content encoding: ${headers['content-encoding']}`);
+        // Setup decompression streams based on content-encoding
+        let decompressionStream = null;
+        const contentEncoding = headers['content-encoding'];
+        if (contentEncoding) {
+          console.log(`Content encoding: ${contentEncoding}`);
+          if (contentEncoding.includes('gzip')) {
+            decompressionStream = zlib.createGunzip();
+          } else if (contentEncoding.includes('deflate')) {
+            decompressionStream = zlib.createInflate();
+          } else if (contentEncoding.includes('br')) {
+            decompressionStream = zlib.createBrotliDecompress();
+          }
         }
         
-        response.on('data', (chunk) => {
-          rawData = Buffer.concat([rawData, chunk]);
-        });
-        
-        response.on('end', () => {
-          console.log(`Response complete: ${statusCode}, size: ${rawData.length} bytes`);
-          resolve({
-            status: statusCode,
-            headers: response.headers,
-            rawBody: rawData,
-            text: async () => rawData.toString(),
-            url: url // Include the final URL
-          });
+        // Return an object with both stream and buffer capabilities
+        resolve({
+          status: statusCode,
+          headers: response.headers,
+          stream: decompressionStream ? response.pipe(decompressionStream) : response,
+          getBuffer: () => {
+            return new Promise((resolveBuffer, rejectBuffer) => {
+              let rawData = Buffer.alloc(0);
+              const dataStream = decompressionStream ? response.pipe(decompressionStream) : response;
+              
+              dataStream.on('data', (chunk) => {
+                rawData = Buffer.concat([rawData, chunk]);
+              });
+              
+              dataStream.on('end', () => {
+                console.log(`Response complete: ${statusCode}, size: ${rawData.length} bytes`);
+                resolveBuffer(rawData);
+              });
+              
+              dataStream.on('error', (err) => {
+                console.error('Stream error:', err);
+                rejectBuffer(err);
+              });
+            });
+          },
+          text: async () => {
+            const buffer = await this.getBuffer();
+            return buffer.toString();
+          },
+          url: url // Include the final URL
         });
       });
-  
+      
       // Error handling
       clientRequest.on('error', (err) => {
         console.error('Request Error:', err.message);
         reject(new Error(`Request failed: ${err.message}`));
       });
-  
+      
       clientRequest.on('timeout', () => {
         clientRequest.destroy(new Error(`Request timeout after ${requestOptions.timeout}ms`));
       });
-  
+      
       if (options.body) {
         clientRequest.write(options.body);
       }
-  
+      
       clientRequest.end();
     } catch (err) {
       console.error('Error in request setup:', err);
@@ -232,15 +258,7 @@ async function fetchWithRandomProfile(url) {
   }
 }
 
-// Handle compressed responses if content-encoding is present
-function handleCompressedResponse(rawBody, contentEncoding) {
-  // This is a placeholder - Node.js HTTP/HTTPS modules handle
-  // decompression automatically when you set Accept-Encoding
-  // If you're having issues with compressed content, you may need
-  // to implement decompression logic here using zlib
-  return rawBody;
-}
-
+// Stream mode - pipes response directly to client
 module.exports = async function superSmartProxy(req, res) {
   const rawUrl = req.query.targetUrl;
   if (!rawUrl) return res.status(400).send('Missing URL');
@@ -251,15 +269,6 @@ module.exports = async function superSmartProxy(req, res) {
     await randomizeRequestTiming();
     
     const response = await fetchWithRandomProfile(targetUrl);
-    
-    // Handle encoding if needed
-    let processedBody = response.rawBody;
-    if (response.headers['content-encoding']) {
-      processedBody = handleCompressedResponse(
-        processedBody, 
-        response.headers['content-encoding']
-      );
-    }
     
     // Set content type
     const contentType = response.headers['content-type'] || 'text/plain';
@@ -283,14 +292,29 @@ module.exports = async function superSmartProxy(req, res) {
     });
     
     // Explicitly set content-encoding to identity (uncompressed)
-    // since we're handling decompression ourselves if needed
+    // since we're handling decompression ourselves
     res.set('Content-Encoding', 'identity');
     
     // Set a generic server header
     res.set('Server', 'nginx');
     
-    // Send the response
-    res.status(response.status).send(processedBody);
+    // Set status code
+    res.status(response.status);
+    
+    // Stream the response
+    response.stream.pipe(res);
+    
+    // Handle errors on the stream
+    response.stream.on('error', (err) => {
+      console.error('Stream error:', err);
+      // Only send error if headers haven't been sent yet
+      if (!res.headersSent) {
+        res.status(500).send(`Stream error: ${err.message}`);
+      } else {
+        // If headers already sent, just end the response
+        res.end();
+      }
+    });
   } catch (err) {
     console.error('Proxy error:', err.message);
     res.status(500).send(`Proxy error: ${err.message}`);
