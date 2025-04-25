@@ -7,7 +7,6 @@
   "type": "commonjs",
   "main": "app.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon app.js",
     "start": "node app.js",
     "lint": "eslint .",
@@ -22,6 +21,7 @@
     "express-rate-limit": "^7.5.0",
     "helmet": "^8.1.0",
     "http-proxy-middleware": "^3.0.5",
+    "jsdom": "^26.1.0",
     "node-fetch": "^2.7.0",
     "socks-proxy-agent": "^8.0.5"
   },
