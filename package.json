@@ -8,7 +8,7 @@
   "main": "app.js",
   "scripts": {
     "dev": "nodemon app.js",
-    "start": "node superProxy.js",
+    "start": "node hundred.js",
     "local": "nodemon start.js"
   },
   "dependencies": {
