@@ -3,152 +3,108 @@ const https = require('https');
 const net = require('net');
 const { URL } = require('url');
 
-function proxyjoke(req, res) {
-  const stripHeaders = [
-    'x-forwarded-for',
-    'x-real-ip',
-    'via',
-    'forwarded',
-    'proxy-connection',
-  ];
+// Create a server instance
+const server = http.createServer();
 
-  const defaultUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.78 Safari/537.36';
-
-  if (req.method === 'CONNECT') {
-    // Handle HTTPS tunneling
-    const [host, port] = req.url.split(':');
-    const targetPort = parseInt(port) || 443;
-
-    console.log(`CONNECT tunnel to ${host}:${targetPort}`);
-
-    const clientSocket = req.socket;
-    const serverSocket = net.connect(targetPort, host, () => {
-      // Connection established
-      clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-      
-      // Pipe data between client and target server
-      clientSocket.pipe(serverSocket);
-      serverSocket.pipe(clientSocket);
-    });
-
-    serverSocket.on('error', (err) => {
-      console.error('Tunnel Error:', err.message);
-      clientSocket.end(`HTTP/1.1 500 Tunnel Error\r\n\r\n${err.message}`);
-    });
-
-    clientSocket.on('error', (err) => {
-      console.error('Client Socket Error:', err.message);
-      serverSocket.end();
-    });
-
-    // Handle connection close from either end
-    clientSocket.on('end', () => {
-      serverSocket.end();
-    });
-    
-    serverSocket.on('end', () => {
-      clientSocket.end();
-    });
-    
-    return; // Important to return here to avoid trying to handle as HTTP request
+// Handle regular HTTP requests
+server.on('request', (req, res) => {
+  console.log(`HTTP Request: ${req.method} ${req.url}`);
+  
+  let targetUrl;
+  if (req.url.startsWith('http')) {
+    targetUrl = req.url;
+  } else {
+    targetUrl = `http://${req.headers.host || ''}${req.url}`;
   }
-
-  // For HTTP/HTTPS requests
+  
   try {
-    // Make sure we have a valid URL to proxy
-    let targetUrl;
-    if (req.url.startsWith('http')) {
-      targetUrl = req.url;
-    } else if (req.headers.host) {
-      targetUrl = `http://${req.headers.host}${req.url}`;
-    } else {
-      res.writeHead(400);
-      res.end('Bad Request: Missing host header');
-      return;
-    }
-
     const parsedUrl = new URL(targetUrl);
-    
-    // Clone and clean up headers
-    const headers = { ...req.headers };
-    
-    // Strip sensitive headers
-    stripHeaders.forEach(header => {
-      delete headers[header];
-    });
-    
-    // Set proper host header
-    headers['host'] = parsedUrl.host;
-    
-    // Set default user agent if not present
-    if (!headers['user-agent']) {
-      headers['user-agent'] = defaultUserAgent;
-    }
-
     const protocol = parsedUrl.protocol === 'https:' ? https : http;
-    const targetPort = parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80);
     
-    console.log(`Proxying ${req.method} request to ${parsedUrl.protocol}//${parsedUrl.hostname}:${targetPort}${parsedUrl.pathname}${parsedUrl.search}`);
+    // Prepare headers, removing proxy-related ones
+    const headers = { ...req.headers };
+    ['x-forwarded-for', 'x-real-ip', 'via', 'forwarded', 'proxy-connection'].forEach(h => delete headers[h]);
+    headers.host = parsedUrl.host;
     
     const options = {
       hostname: parsedUrl.hostname,
-      port: targetPort,
+      port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
       path: parsedUrl.pathname + parsedUrl.search,
       method: req.method,
       headers: headers
     };
-
+    
     const proxyReq = protocol.request(options, (proxyRes) => {
-      // Copy status code and headers from the target response
       res.writeHead(proxyRes.statusCode, proxyRes.headers);
-      
-      // Stream the response body
       proxyRes.pipe(res);
     });
-
-    // Handle request errors
-    proxyReq.on('error', (err) => {
-      console.error('Proxy Request Error:', err.message);
-      if (!res.headersSent) {
-        res.writeHead(502);
-        res.end(`Proxy Error: ${err.message}`);
-      } else {
-        res.end();
-      }
-    });
-
-    // If there is a request body, forward it to the target
+    
     req.pipe(proxyReq);
     
-    // Handle client abort
-    req.on('aborted', () => {
-      proxyReq.abort();
+    proxyReq.on('error', (err) => {
+      console.error(`Proxy request error: ${err.message}`);
+      if (!res.headersSent) {
+        res.writeHead(502);
+        res.end(`Proxy error: ${err.message}`);
+      }
     });
-
   } catch (err) {
-    console.error('Proxy Error:', err.message);
-    res.writeHead(500);
-    res.end(`Proxy Error: ${err.message}`);
+    console.error(`URL parsing error: ${err.message}`);
+    res.writeHead(400);
+    res.end(`Bad request: ${err.message}`);
   }
-}
-
-// Create a server to handle proxy requests
-const server = http.createServer((req, res) => {
-  proxyjoke(req, res);
 });
 
-// Handle CONNECT method for HTTPS tunneling
-server.on('connect', (req, res, socket, head) => {
-  proxyjoke(req, res);
-});
-
-// For use as middleware or standalone server
-module.exports = proxyjoke;
-
-// If this file is run directly (not imported), start the server
-if (require.main === module) {
-  const PORT = process.env.PORT || 3000;
-  server.listen(PORT, () => {
-    console.log(`Proxy server running on port ${PORT}`);
+// Handle HTTPS tunneling (CONNECT method)
+server.on('connect', (req, res, clientSocket, head) => {
+  // Log the CONNECT request
+  console.log(`CONNECT Request to: ${req.url}`);
+  
+  // Parse the target address
+  const [targetHost, targetPort] = req.url.split(':');
+  const port = parseInt(targetPort) || 443;
+  
+  // Create connection to target server
+  const targetSocket = net.connect(port, targetHost, () => {
+    // Inform the client that the connection is established
+    clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+    
+    // If there's any head data, write it to the target socket
+    if (head && head.length > 0) {
+      targetSocket.write(head);
+    }
+    
+    // Create the tunnel by piping both sockets
+    targetSocket.pipe(clientSocket);
+    clientSocket.pipe(targetSocket);
   });
-}
+  
+  // Handle errors on the target socket
+  targetSocket.on('error', (err) => {
+    console.error(`Target connection error: ${err.message}`);
+    clientSocket.end(`HTTP/1.1 502 Bad Gateway\r\n\r\n`);
+  });
+  
+  // Handle errors on the client socket
+  clientSocket.on('error', (err) => {
+    console.error(`Client connection error: ${err.message}`);
+    targetSocket.end();
+  });
+  
+  // Handle connection close on either end
+  targetSocket.on('end', () => {
+    clientSocket.end();
+  });
+  
+  clientSocket.on('end', () => {
+    targetSocket.end();
+  });
+});
+
+// Start the server
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`Proxy server running on port ${PORT}`);
+});
+
+module.exports = server; // Export for use in other files if needed
