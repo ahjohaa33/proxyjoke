@@ -8,7 +8,8 @@
   "main": "app.js",
   "scripts": {
     "dev": "nodemon app.js",
-    "start": "node app.js"
+    "start": "node app.js",
+    "local": "nodemon start.js"
   },
   "dependencies": {
     "body-parser": "^2.2.0",

@@ -26,7 +26,7 @@ app.use(limiter);
 
 // Routes
 app.get('/', (req, res) => {
-    res.json({ status: "OK", message: "Welcome to Express Proxy Server"});
+    res.send("Welcome to express proxy server");
 });
 
 
