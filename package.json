@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "nodemon app.js",
     "start": "node jproxy.js",
-    "local": "nodemon start.js"
+    "local": "nodemon jproxy.js"
   },
   "dependencies": {
     "body-parser": "^2.2.0",
