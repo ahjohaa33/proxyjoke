@@ -5,6 +5,8 @@ const proxyjoke = require('./src/middlewares/proxy')
 app.use(requestLogger());
 app.use(proxyjoke);
 
-app.listen(process.env.PORT || 3000, (req,res)=>{
-    console.log(`proxy server listening`)
+const Port = process.env.PORT || 4000;
+
+app.listen(Port, (req,res)=>{
+    console.log(`proxy server listening on PORT: ${Port}`)
 });
