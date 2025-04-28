@@ -8,7 +8,7 @@
   "main": "app.js",
   "scripts": {
     "dev": "nodemon app.js",
-    "start": "node jproxy.js",
+    "start": "node sockProxy.js",
     "local": "nodemon jproxy.js"
   },
   "dependencies": {
